@@ -9,6 +9,6 @@ class TrendServiceProvider extends PackageServiceProvider
 {
     public function configurePackage(Package $package): void
     {
-        $package->name('laravel-trend');
+        $package->name('laravel-trend-mongodb');
     }
 }
