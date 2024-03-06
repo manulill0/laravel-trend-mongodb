@@ -4,12 +4,14 @@ namespace Flowframe\Trend;
 
 use Carbon\CarbonPeriod;
 use Error;
+use Flowframe\Trend\Adapters\MongoDBAdapter;
 use Flowframe\Trend\Adapters\MySqlAdapter;
 use Flowframe\Trend\Adapters\PgsqlAdapter;
 use Flowframe\Trend\Adapters\SqliteAdapter;
-use Illuminate\Database\Eloquent\Builder;
+use MongoDB\Laravel\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+
 
 class Trend
 {
@@ -19,7 +21,7 @@ class Trend
 
     public Carbon $end;
 
-    public string $dateColumn = 'created_at';
+    public string $dateColumn = 'creation_date';
 
     public string $dateAlias = 'date';
 
@@ -91,21 +93,128 @@ class Trend
         return $this;
     }
 
-    public function aggregate(string $column, string $aggregate): Collection
-    {
-        $values = $this->builder
-            ->toBase()
-            ->selectRaw("
-                {$this->getSqlDate()} as {$this->dateAlias},
-                {$aggregate}({$column}) as aggregate
-            ")
-            ->whereBetween($this->dateColumn, [$this->start, $this->end])
-            ->groupBy($this->dateAlias)
-            ->orderBy($this->dateAlias)
-            ->get();
+    // public function aggregate(string $column, string $aggregate): Collection
+    // {
+    //     dd($column, $aggregate);
 
-        return $this->mapValuesToDates($values);
-    }
+    //     $values = $this->builder
+    //         ->toBase()
+    //         ->selectRaw("
+    //             {$this->getSqlDate()} as {$this->dateAlias},
+    //             {$aggregate}({$column}) as aggregate
+    //         ")
+    //         ->whereBetween($this->dateColumn, [$this->start, $this->end])
+    //         ->groupBy($this->dateAlias)
+    //         ->orderBy($this->dateAlias)
+    //         ->get();
+
+    //     return $this->mapValuesToDates($values);
+    // }
+
+//     public function aggregate(string $column, string $aggregate): Collection
+// {
+//     // Definir la pipeline de agregación
+//     $pipeline = [
+//         [
+//             '$match' => [
+//                 $this->dateColumn => [
+//                     '$gte' => $this->start,
+//                     '$lte' => $this->end,
+//                 ],
+//             ],
+//         ],
+//         [
+//             '$group' => [
+//                 '_id' => [
+//                     '$dateToString' => [
+//                         'format' => '%Y-%m-%d', // Cambia este formato según tu intervalo
+//                         'date' => '$' . $this->dateColumn,
+//                     ],
+//                 ],
+//                 'aggregate' => [
+//                     '$' . $aggregate => '$' . $column,
+//                 ],
+//             ],
+//         ],
+//         [
+//             '$sort' => ['_id' => 1],
+//         ],
+//     ];
+
+
+
+//     // Ejecutar la consulta de agregación
+//     $results = $this->builder->raw(function($collection) use ($pipeline) {
+//         return $collection->aggregate($pipeline);
+//     });
+
+//     // dd($results);
+
+//     // Convertir los resultados a una colección de Laravel
+//     $values = collect($results)->map(function ($result) {
+//         return new TrendValue(
+//             date: $result['_id'],
+//             aggregate: $result['aggregate'],
+//         );
+//     });
+
+
+
+//     return $this->mapValuesToDates($values);
+// }
+
+public function aggregate(string $column = '*', string $aggregate = 'count'): Collection
+{
+    // Define el formato de fecha según tu intervalo
+    // $dateFormat = $this->getMongoDateFormat(); // Implementa esta función según tu necesidad
+
+    // Construye la pipeline de agregación
+    $pipeline = [
+        [
+            '$match' => [
+                $this->dateColumn => [
+                    '$gte' => $this->start->valueOf(),
+                    '$lte' => $this->end->valueOf(),
+                ],
+            ],
+        ],
+        [
+            '$group' => [
+                '_id' => $this->getSqlDate(),
+                // Cambia aquí dependiendo de si es conteo u otro tipo de agregación
+                'aggregate' => $aggregate === 'count' ? ['$sum' => 1] : ['$' . strtolower($aggregate) => $column === '*' ? null : '$' . $column],
+            ],
+        ],
+        [
+            '$project' => [
+                $this->dateAlias => '$_id',
+                'aggregate' => 1,
+                '_id' => 0, // Excluir el campo _id de MongoDB
+            ],
+        ],
+        [
+            '$sort' => [$this->dateAlias => 1],
+        ],
+    ];
+
+
+    // Ejecuta la pipeline de agregación
+    $results = $this->builder->raw(function ($collection) use ($pipeline) {
+        return $collection->aggregate($pipeline);
+    });
+
+
+    // Convierte los resultados en una colección de Laravel
+    $values = collect($results)->map(function ($result) {
+        return new TrendValue(
+            date: $result[$this->dateAlias],
+            aggregate: $result['aggregate'],
+        );
+    });
+
+    return $this->mapValuesToDates($values);
+}
+
 
     public function average(string $column): Collection
     {
@@ -129,6 +238,7 @@ class Trend
 
     public function count(string $column = '*'): Collection
     {
+
         return $this->aggregate($column, 'count');
     }
 
@@ -163,9 +273,10 @@ class Trend
         );
     }
 
-    protected function getSqlDate(): string
+    protected function getSqlDate()
     {
         $adapter = match ($this->builder->getConnection()->getDriverName()) {
+            'mongodb' => new MongoDBAdapter(),
             'mysql' => new MySqlAdapter(),
             'sqlite' => new SqliteAdapter(),
             'pgsql' => new PgsqlAdapter(),
